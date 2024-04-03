@@ -1,65 +1,108 @@
+!pip install prophet
 
-pip install yfinance
+!pip install fbprophet
 
-import yfinance as yhf
+!pip install yfinance
+!pip install yahoofinancials
 
-import statsmodels.api as sm
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_absolute_error as mae
+from sklearn.preprocessing import StandardScaler
+import yfinance as yf
 
-dlf = yhf.download('ETH-EUR')
+df = yf.download('ETH-USD',
+   start='2020-10-10',
+   end='2024-04-2',
+   progress=False)
+df.head()
 
-dlf
+df['Close'].plot(kind='line', figsize=(8, 4), title='Close')
+plt.gca().spines[['top', 'right']].set_visible(False)
 
-import numpy as np, pandas as pd, matplotlib.pyplot as plt
-import math
-from statsmodels.tsa.arima.model import ARIMA
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+series = df['Close'].values.reshape(-1, 1)
 
-plt.plot(dlf.index, dlf['Adj Close'])
-plt.show()
+scaler = StandardScaler()
+scaler.fit(series[:len(series) // 2])
+series = scaler.transform(series).flatten()
 
-#Training section split
+T = 10
+D = 1
+X = []
+Y = []
 
-to_row = int(len(dlf)*0.9)
+for t in range(len(series)-T):
+  x = series[t:t+T]
+  X = np.append(X, x)
+  y = series[t+T]
+  Y = np.append(Y, y)
+  X = np.array(X).reshape(-1, T)
+  Y = np.array(Y)
+  N = len(X)
+  print("X.shape", X.shape, "Y.shape", Y.shape)
 
-training_data = list(dlf[0:to_row]['Adj Close'])
-testing_data = list(dlf[to_row:]['Adj Close'])
-testing_data
+class BaselineModel:
+  def predict(self, X):
+    return X[:,-1] # return the last value for each input sequence
 
-plt.figure(figsize=(10,6))
-plt.grid(True)
-plt.xlabel('Dates')
-plt.ylabel('Closing Prices')
-plt.plot(dlf[0:to_row]['Adj Close'],'green',label='Train data')
-plt.plot(dlf[to_row:]['Adj Close'],'blue',label='Test data')
-
-model_predictions = []
-n_test_obser = len(testing_data)
-
-for i in range(n_test_obser):
-  model = ARIMA(training_data, order=(4,1,0))
-  model_fit = model.fit()
-  output = model_fit.forecast()
-  #yhat = list(output[0])[0]
-  #model_predictions.append(yhat)
-  actual_test_value = testing_data[i]
-  model_predictions.append(actual_test_value)
-  print(model_fit.summary())
-
-len(model_predictions)
-
-plt.figure(figsize=(15,9))
-plt.grid(True)
-
-date_range = dlf[to_row:].index
-
-plt.plot(date_range, model_predictions[:to_row], color = 'blue', marker='o',linestyle='dashed',label='ETH predicted Price')
-plt.plot(date_range, testing_data, color='red', label='ETH Actual Price')
+Xtrain, Ytrain = X[:-N//2], Y[:-N//2]
+Xtest, Ytest = X[-N//2:], Y[-N//2:]
 
 
-plt.title('Ethereum Price Prediction')
-plt.xlabel('Dates')
-plt.ylabel('Price')
-plt.legend()
-plt.show()
-plt.plot(dlf[0:to_row]['Adj Close'],'green',label='Train data')
-plt.plot(dlf[to_row:]['Adj Close'],'blue',label='Test data')
+if len(Ytrain) > 0:
+    Ytrain2 = scaler.inverse_transform(Ytrain.reshape(-1, 1)).flatten()
+else:
+    Ytrain2 = np.array([])
+
+if len(Ytest) > 0:
+    Ytest2 = scaler.inverse_transform(Ytest.reshape(-1, 1)).flatten()
+else:
+    Ytest2 = np.array([])
+
+print("Ytrain2:", Ytrain2)
+print("Ytest2:", Ytest2)
+
+from prophet import Prophet
+
+df_prophet = df.reset_index().rename(columns={'Date': 'ds', 'Close': 'y'})
+
+model_prophet = Prophet(daily_seasonality=False, yearly_seasonality=True)
+model_prophet.fit(df_prophet)
+
+future_dates = pd.date_range(start=df_prophet['ds'].max(), periods=31, freq='D')[1:]  # Start from the next day
+
+future_df = pd.DataFrame({'ds': future_dates})
+
+forecast_prophet = model_prophet.predict(future_df)
+
+predicted_price_2024 = forecast_prophet.loc[forecast_prophet['ds'] == '2024-04-10', 'yhat'].values
+
+average_daily_return = df_prophet['y'].pct_change().mean()
+
+last_observed_price = df_prophet['y'].iloc[-1]
+
+days_until_march_31 = (pd.Timestamp('2024-04-10') - df_prophet['ds'].max()).days
+predicted_price_2024 = last_observed_price * (1 + average_daily_return)**days_until_march_31
+
+print(f"The predicted closing price for the 31st of April 10th is: {predicted_price_2024:.2f}")
+
+
+import pandas as pd
+
+average_daily_return = df_prophet['y'].pct_change().mean()
+
+last_observed_price = df_prophet['y'].iloc[-1]
+
+start_date = pd.Timestamp('2024-04-05')
+end_date = pd.Timestamp('2024-04-10')
+
+predicted_prices = {}
+for single_date in pd.date_range(start=start_date, end=end_date):
+    days_until_date = (single_date - df_prophet['ds'].max()).days
+    predicted_price = last_observed_price * (1 + average_daily_return)**days_until_date
+    predicted_prices[single_date.strftime('%m/%d')] = predicted_price
+
+for date, price in predicted_prices.items():
+    print(f"The predicted closing price for {date} is: {price:.2f}")
+
